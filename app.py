@@ -3,6 +3,7 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 import google.generativeai as genai
+import datetime
 
 # ==========================================
 # 1. ページ初期設定＆デザインシステム (CSS)
@@ -259,6 +260,40 @@ def parse_json_from_gemini(raw_text: str):
     # 改行や特殊文字のクリーンアップ
     return json.loads(text)
 
+
+def generate_export_document(input_method: str, url_input: str, input_text: str, results: list) -> str:
+    """分析結果をMarkdown形式のドキュメントとして生成する"""
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    doc = []
+    doc.append("# 医療広告ガイドライン チェック結果レポート\n")
+    doc.append(f"**出力日時:** {now}\n")
+    
+    doc.append("## 1. チェック対象\n")
+    if input_method == "URLから読み込み" and url_input:
+        doc.append(f"**対象URL:** {url_input}\n")
+    doc.append("**対象テキスト:**")
+    doc.append("```text")
+    doc.append(input_text)
+    doc.append("```\n")
+    
+    doc.append("## 2. 分析結果\n")
+    if not results:
+        doc.append("✅ 医療広告ガイドラインに抵触する可能性のある表現は見つかりませんでした。\n")
+    else:
+        high_risk_count = sum(1 for r in results if r.get("risk_level") == "高")
+        doc.append(f"**総指摘件数:** {len(results)} 件（うち 危険度「高」: {high_risk_count} 件）\n")
+        
+        for idx, res in enumerate(results, 1):
+            doc.append(f"### 指摘 {idx}: {res.get('phrase', '')}")
+            doc.append(f"- **危険度:** {res.get('risk_level', '')}")
+            doc.append(f"- **カテゴリ:** {res.get('category', '')}")
+            doc.append(f"- **抵触理由:** {res.get('reason', '')}")
+            doc.append(f"- **法的根拠:** {res.get('legal_basis', '')} ({res.get('legal_basis_date', '')})")
+            doc.append(f"- **改善案:** {res.get('suggestion', '')}\n")
+            
+    return "\\n".join(doc)
+
 # ==========================================
 # 3. アプリケーションUI & メインロジック
 # ==========================================
@@ -422,6 +457,18 @@ if api_key and api_key != "YOUR_GEMINI_API_KEY_HERE":
                             </div>
                         </div>
                         """, unsafe_allow_html=True)
+                
+                # エクスポート機能の追加
+                st.markdown("---")
+                target_url = url_input if input_method == "URLから読み込み" else ""
+                export_doc = generate_export_document(input_method, target_url, input_text, results)
+                st.download_button(
+                    label="📥 分析結果をドキュメントとしてダウンロード (.md)",
+                    data=export_doc,
+                    file_name="guideline_check_result.md",
+                    mime="text/markdown",
+                    use_container_width=True
+                )
                 
             except json.JSONDecodeError:
                 st.error("❌ AIの解析結果を正しく処理できませんでした。出力フォーマットが崩れた可能性があります。再度実行してください。")
