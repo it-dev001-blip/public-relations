@@ -17,16 +17,13 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# カスタムCSSの適用 (ダークモード/ライトモード両対応、マテリアル風デザイン)
 st.markdown("""
 <style>
-    /* 全体のフォント・微調整 */
     @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500;700&display=swap');
     html, body, [data-testid="stAppViewContainer"] {
         font-family: 'Noto Sans JP', sans-serif;
     }
-    
-    /* ヘッダーデザイン */
+
     .header-container {
         padding: 2.5rem 1.5rem;
         background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%);
@@ -48,7 +45,6 @@ st.markdown("""
         font-weight: 300;
     }
 
-    /* 総合評価エリア */
     .status-box {
         padding: 1.5rem;
         border-radius: 12px;
@@ -74,7 +70,6 @@ st.markdown("""
         border: 1px solid #dcfce7;
     }
 
-    /* 指摘カード */
     .card {
         background-color: white;
         color: #1f2937;
@@ -89,14 +84,9 @@ st.markdown("""
         transform: translateY(-2px);
         box-shadow: 0 6px 12px rgba(0, 0, 0, 0.08);
     }
-    .card-ng {
-        border-left-color: #dc2626;
-    }
-    .card-warning {
-        border-left-color: #d97706;
-    }
+    .card-ng { border-left-color: #dc2626; }
+    .card-warning { border-left-color: #d97706; }
 
-    /* バッジ */
     .badge {
         display: inline-block;
         padding: 0.25rem 0.6rem;
@@ -106,16 +96,9 @@ st.markdown("""
         margin-right: 0.5rem;
         text-transform: uppercase;
     }
-    .badge-high {
-        background-color: #fee2e2;
-        color: #dc2626;
-    }
-    .badge-mid {
-        background-color: #fef3c7;
-        color: #d97706;
-    }
+    .badge-high { background-color: #fee2e2; color: #dc2626; }
+    .badge-mid  { background-color: #fef3c7; color: #d97706; }
 
-    /* 指摘内容・表現 */
     .original-phrase {
         font-size: 1.1rem;
         font-weight: 700;
@@ -136,16 +119,15 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ヘッダーの描画
 st.markdown("""
 <div class="header-container">
     <div class="header-title">🏥 医療広告ガイドラインチェッカー</div>
-    <div class="header-subtitle">AIによる2段階検証(ダブルチェック)で、医療広告規制への抵触リスクを可視化します</div>
+    <div class="header-subtitle">AIによる3段階検証で、医療広告規制への抵触リスクと改善案の品質を可視化します</div>
 </div>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. ヘルパー関数 (スクレイピング & API呼び出し)
+# 2. ヘルパー関数
 # ==========================================
 
 def extract_text_from_url(url: str) -> str:
@@ -156,24 +138,15 @@ def extract_text_from_url(url: str) -> str:
     try:
         response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
-        
-        # 文字化け対策
         response.encoding = response.apparent_encoding
-        
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # 不要なタグを排除
         for tag in soup(["script", "style", "nav", "footer", "header", "iframe"]):
             tag.decompose()
-            
-        # テキストの取得とクリーンアップ
         lines = (line.strip() for line in soup.get_text().splitlines())
         chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
         text = "\n".join(chunk for chunk in chunks if chunk)
-        
         if not text or len(text.strip()) < 10:
             raise ValueError("抽出されたテキストが極めて少ないか、空です。")
-            
         return text
     except Exception as e:
         raise RuntimeError(f"URLからのデータ取得に失敗しました: {str(e)}")
@@ -218,10 +191,10 @@ def run_gemini_stage_1(text: str, model_name: str) -> str:
 
 
 def run_gemini_stage_2(stage1_result: str, model_name: str) -> str:
-    """ステップ2: ファクトチェック・検証（ハルシネーション対策）"""
+    """ステップ2: 法的根拠のファクトチェック・ダブルチェック"""
     prompt = f"""
 あなたは医療法および医療広告ガイドラインに極めて精通した法律の専門家・ファクトチェッカーです。
-ステップ1でAIが一時抽出した「ガイドライン違反の疑いリスト」に対して、厳格なファクトチェック（ダブルチェック）を行ってください。
+ステップ1でAIが一次抽出した「ガイドライン違反の疑いリスト」に対して、厳格なファクトチェックを行ってください。
 
 【ファクトチェックのルール】
 1. 「法的根拠 (legal_basis)」および「発出・最終改訂年月日 (legal_basis_date)」が、実在する公式の医療広告ガイドラインや厚生労働省の告示・通達と一致しているかをファクトチェックしてください。
@@ -239,12 +212,51 @@ def run_gemini_stage_2(stage1_result: str, model_name: str) -> str:
     "reason": "ファクトチェックを経た正確な理由の解説",
     "legal_basis": "正確に実在するガイドライン項目や条文名",
     "legal_basis_date": "実在する発出・最終改訂年月日（例: 平成30年5月8日改正、令和5年4月1日一部改正など。判明している最新の日付を正確に記載）",
-    "suggestion": "実用的かつ合法的な代替表現または削除の推奨案"
+    "suggestion": "具体的な代替表現または削除の推奨案"
   }}
 ]
 
 【検証対象（ステップ1の抽出結果）】
 {stage1_result}
+"""
+    model = genai.GenerativeModel(model_name)
+    response = model.generate_content(prompt)
+    return response.text
+
+
+def run_gemini_stage_3(stage2_result: str, model_name: str) -> str:
+    """ステップ3: 改善案の日本語品質チェック＆ガイドライン最終確認"""
+    prompt = f"""
+あなたは医療広告ガイドラインの専門家であり、かつ日本語表現の校正・編集者でもあります。
+ステップ2までの精査を経たリストに対して、各指摘の「改善案 (suggestion)」について以下の2点を最終確認・修正してください。
+
+【確認・修正のルール】
+1. 【日本語品質チェック】
+   - 「改善案」の文章が、日本語として正確かつ自然な表現になっているかを確認してください。
+   - 「てにをは」の誤り、不自然な言い回し、冗長な表現、二重否定、主語と述語のねじれなどがあれば修正してください。
+   - 実際の広告・Webサイトで使用できる、洗練された自然な日本語に整えてください。
+
+2. 【ガイドライン最終確認】
+   - 修正後の「改善案」が、医療広告ガイドラインおよび医療法に抵触しない安全な表現であることを最終確認してください。
+   - もし改善案自体がまだガイドラインに抵触する恐れがある場合は、安全な表現に修正してください。
+   - 改善案が「削除を推奨する」という趣旨の場合は、その旨を簡潔かつ明確な日本語で表現してください。
+
+【出力フォーマット】
+最終的な完成版リストを、以下のキーを持つJSONの配列として出力してください。Markdownのjsonコードブロック（```json ... ```）で囲んでください。
+[
+  {{
+    "phrase": "抵触リスクのあるフレーズ",
+    "risk_level": "高" または "中",
+    "category": "違反カテゴリ",
+    "reason": "理由の解説",
+    "legal_basis": "実在するガイドライン項目や条文名",
+    "legal_basis_date": "発出・最終改訂年月日",
+    "suggestion": "日本語として自然かつガイドラインに完全準拠した改善案"
+  }}
+]
+
+【検証対象（ステップ2の精査済み結果）】
+{stage2_result}
 """
     model = genai.GenerativeModel(model_name)
     response = model.generate_content(prompt)
@@ -258,8 +270,6 @@ def parse_json_from_gemini(raw_text: str):
         text = text.split("```json")[1].split("```")[0].strip()
     elif "```" in text:
         text = text.split("```")[1].split("```")[0].strip()
-    
-    # 改行や特殊文字のクリーンアップ
     return json.loads(text)
 
 
@@ -267,48 +277,36 @@ def generate_docx(results: list) -> bytes:
     """分析結果をWord（.docx）形式のバイナリデータとして生成する"""
     doc = Document()
     doc.add_heading("医療広告ガイドライン分析結果", level=1)
-    
-    # 危険度集計
     high_risk_count = sum(1 for r in results if r.get("risk_level") == "高")
     doc.add_paragraph(f"総指摘件数: {len(results)} 件（うち 危険度「高」: {high_risk_count} 件）\n")
-    
     for idx, res in enumerate(results, 1):
         doc.add_heading(f"指摘 {idx}", level=2)
-        
         p = doc.add_paragraph()
         p.add_run("対象表現: ").bold = True
         p.add_run(f"「{res.get('phrase', '')}」\n")
-        
         p.add_run("危険度: ").bold = True
         p.add_run(f"{res.get('risk_level', '')}\n")
-        
         p.add_run("カテゴリ: ").bold = True
         p.add_run(f"{res.get('category', '')}\n")
-        
         p.add_run("抵触理由: ").bold = True
         p.add_run(f"{res.get('reason', '')}\n")
-        
         p.add_run("改善案（代替表現・削除案）: ").bold = True
         p.add_run(f"{res.get('suggestion', '')}\n")
-        
         p.add_run("法的根拠: ").bold = True
         p.add_run(f"{res.get('legal_basis', '未詳')} (発出・最終改訂: {res.get('legal_basis_date', '不明・未記載')})")
-        
     bio = io.BytesIO()
     doc.save(bio)
     return bio.getvalue()
 
 
 def generate_txt(results: list) -> str:
-    """分析結果をシンプルなプレーンテキスト形式として生成する"""
+    """分析結果をプレーンテキスト形式として生成する"""
     lines = []
     lines.append("=========================================")
     lines.append("医療広告ガイドライン 分析結果")
     lines.append("=========================================\n")
-    
     high_risk_count = sum(1 for r in results if r.get("risk_level") == "高")
     lines.append(f"総指摘件数: {len(results)} 件（うち 危険度「高」: {high_risk_count} 件）\n")
-    
     for idx, res in enumerate(results, 1):
         lines.append(f"--- 指摘 {idx} ---")
         lines.append(f"対象表現: 「{res.get('phrase', '')}」")
@@ -317,7 +315,6 @@ def generate_txt(results: list) -> str:
         lines.append(f"抵触理由: {res.get('reason', '')}")
         lines.append(f"改善案（代替表現・削除案）: {res.get('suggestion', '')}")
         lines.append(f"法的根拠: {res.get('legal_basis', '未詳')} (発出・最終改訂: {res.get('legal_basis_date', '不明・未記載')})\n")
-        
     return "\n".join(lines)
 
 
@@ -325,23 +322,19 @@ def generate_txt(results: list) -> str:
 # 3. アプリケーションUI & メインロジック
 # ==========================================
 
-# 1. APIキーの設定状況確認
 api_key = None
 if "GEMINI_API_KEY" in st.secrets:
     api_key = st.secrets["GEMINI_API_KEY"]
 
 if not api_key or api_key == "YOUR_GEMINI_API_KEY_HERE":
     st.warning("⚠️ Gemini APIキーが設定されていません。ローカル環境の場合は `.streamlit/secrets.toml` に `GEMINI_API_KEY = \"あなたのキー\"` を記述するか、デプロイ環境の環境変数・Secretsに設定してください。")
-    # ユーザーが一時的に入力できるUIも提供（利便性のため）
     temp_key = st.text_input("一時的に使用するGemini APIキーを入力することも可能です:", type="password")
     if temp_key:
         api_key = temp_key
 
-# APIキーがある場合に処理を有効化
 if api_key and api_key != "YOUR_GEMINI_API_KEY_HERE":
     genai.configure(api_key=api_key)
-    
-    # サイドバー: 設定
+
     with st.sidebar:
         st.header("⚙️ 設定")
         model_name = st.selectbox(
@@ -359,16 +352,19 @@ if api_key and api_key != "YOUR_GEMINI_API_KEY_HERE":
         - 客観的証明が困難な内容
         - 品位を損ねる内容（不適切な割引等）
         - 医療と無関係な誘引（著名人の来院等）
+
+        **【3段階チェックの流れ】**
+        1. 一次抽出（違反候補の特定）
+        2. 法的根拠のファクトチェック
+        3. 改善案の日本語校正＋ガイドライン最終確認
         """)
 
-    # メイン入力フォーム
     st.subheader("📝 広告原稿・Webページの入力")
-    
-    # タブでの切り替え
     input_method = st.radio("入力方法を選択してください:", ["テキストを直接入力", "URLから読み込み"], horizontal=True)
-    
+
     input_text = ""
-    
+    url_input = ""
+
     if input_method == "テキストを直接入力":
         input_text = st.text_area(
             "チェックしたい広告原稿・テキストを貼り付けてください（例: チラシ原稿、LPの文言など）",
@@ -384,7 +380,6 @@ if api_key and api_key != "YOUR_GEMINI_API_KEY_HERE":
                     st.success("テキストの抽出に成功しました！以下の抽出内容を確認して「チェック実行」を押してください。")
                     with st.expander("📄 抽出されたテキストを確認する"):
                         st.text_area("抽出テキスト（編集可能）", value=input_text, height=200, key="scraped_text_area")
-                        # ユーザーが編集したかもしれないので、セッション状態やキーで上書きできるようにする
                         if "scraped_text_area" in st.session_state:
                             input_text = st.session_state["scraped_text_area"]
                 except Exception as e:
@@ -397,61 +392,58 @@ if api_key and api_key != "YOUR_GEMINI_API_KEY_HERE":
     if "checked_text" not in st.session_state:
         st.session_state.checked_text = ""
 
-    # チェック実行ボタン
     if input_text:
-        # 入力テキストが変更された場合は、古い結果をクリアして非表示にする
+        # 入力テキストが変更された場合は古い結果をクリア
         if input_text != st.session_state.checked_text and st.session_state.analysis_results is not None:
             st.session_state.analysis_results = None
             st.session_state.checked_text = ""
 
         if st.button("🔍 ガイドラインチェックを実行する", type="primary", use_container_width=True):
-            # 古い結果を一旦クリア
             st.session_state.analysis_results = None
             st.session_state.checked_text = ""
-            
-            # プログレス表示と2段階処理
+
             progress_bar = st.progress(0)
             status_text = st.empty()
-            
+
             try:
-                # -----------------
                 # ステップ1: 一次抽出
-                # -----------------
-                status_text.markdown("🔄 **[Step 1/2]** AIがガイドライン抵触の疑いがある表現を一次抽出しています...")
-                progress_bar.progress(20)
-                
+                status_text.markdown("🔄 **[Step 1/3]** AIがガイドライン抵触の疑いがある表現を一次抽出しています...")
+                progress_bar.progress(15)
                 stage1_raw = run_gemini_stage_1(input_text, model_name)
-                
+                progress_bar.progress(35)
+
+                # ステップ2: 法的根拠のファクトチェック
+                status_text.markdown("🛡️ **[Step 2/3]** 法的根拠・条文・発出日の正確性をファクトチェックしています...")
                 progress_bar.progress(50)
-                
-                # -----------------
-                # ステップ2: ファクトチェック・ダブルチェック
-                # -----------------
-                status_text.markdown("🛡️ **[Step 2/2]** 抽出された法的根拠や条文・発出日の正確性をファクトチェックしています（ハルシネーション検証）...")
-                progress_bar.progress(70)
-                
                 stage2_raw = run_gemini_stage_2(stage1_raw, model_name)
-                
-                progress_bar.progress(90)
+                progress_bar.progress(70)
+
+                # ステップ3: 改善案の日本語品質＆ガイドライン最終確認
+                status_text.markdown("✍️ **[Step 3/3]** 改善案の日本語品質とガイドライン準拠を最終確認しています...")
+                progress_bar.progress(85)
+                stage3_raw = run_gemini_stage_3(stage2_raw, model_name)
+                progress_bar.progress(95)
+
                 status_text.markdown("📊 結果を整形中...")
-                
-                # パース
-                results = parse_json_from_gemini(stage2_raw)
-                
+                results = parse_json_from_gemini(stage3_raw)
+
                 progress_bar.progress(100)
                 status_text.empty()
                 progress_bar.empty()
-                
-                # セッションステートに保存
+
                 st.session_state.analysis_results = results
                 st.session_state.checked_text = input_text
-                
+
             except json.JSONDecodeError:
+                status_text.empty()
+                progress_bar.empty()
                 st.error("❌ AIの解析結果を正しく処理できませんでした。出力フォーマットが崩れた可能性があります。再度実行してください。")
-                if 'stage2_raw' in locals():
+                if 'stage3_raw' in locals():
                     with st.expander("生データを確認する"):
-                        st.text(stage2_raw)
+                        st.text(stage3_raw)
             except Exception as e:
+                status_text.empty()
+                progress_bar.empty()
                 st.error(f"❌ エラーが発生しました: {str(e)}")
     else:
         st.info("💡 テキストを入力するか、URLを読み込んで「ガイドラインチェックを実行する」ボタンを押してください。")
@@ -459,10 +451,10 @@ if api_key and api_key != "YOUR_GEMINI_API_KEY_HERE":
     # 分析結果の描画
     if st.session_state.analysis_results is not None:
         results = st.session_state.analysis_results
-        
+
         st.markdown("---")
         st.subheader("📊 分析結果")
-        
+
         if not results:
             st.markdown("""
             <div class="status-box status-ok">
@@ -471,10 +463,8 @@ if api_key and api_key != "YOUR_GEMINI_API_KEY_HERE":
             """, unsafe_allow_html=True)
             st.balloons()
         else:
-            # 危険度集計
             high_risk_count = sum(1 for r in results if r.get("risk_level") == "高")
-            mid_risk_count = sum(1 for r in results if r.get("risk_level") == "中")
-            
+
             if high_risk_count > 0:
                 st.markdown(f"""
                 <div class="status-box status-ng">
@@ -487,13 +477,12 @@ if api_key and api_key != "YOUR_GEMINI_API_KEY_HERE":
                     ⚠️ 要注意表現が {len(results)} 件検出されました。念のため内容の見直しを推奨します。
                 </div>
                 """, unsafe_allow_html=True)
-            
-            # 各指摘事項をカード形式で表示
+
             for idx, res in enumerate(results, 1):
                 risk = res.get("risk_level", "中")
                 risk_class = "card-ng" if risk == "高" else "card-warning"
                 badge_class = "badge-high" if risk == "高" else "badge-mid"
-                
+
                 st.markdown(f"""
                 <div class="card {risk_class}">
                     <div style="display: flex; align-items: center; margin-bottom: 0.75rem;">
@@ -508,13 +497,13 @@ if api_key and api_key != "YOUR_GEMINI_API_KEY_HERE":
                         <strong>✅ 改善案（代替表現・削除案）:</strong> {res.get('suggestion', '')}
                     </div>
                     <div class="meta-section">
-                        ⚖️ <strong>法的根拠:</strong> {res.get('legal_basis', '未詳')} 
+                        ⚖️ <strong>法的根拠:</strong> {res.get('legal_basis', '未詳')}
                         <span style="margin-left: 1.5rem;">📅 <strong>発出・最終改訂:</strong> {res.get('legal_basis_date', '不明・未記載')}</span>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
-        
-        # エクスポート機能（Word形式とテキスト形式のダウンロード、法的根拠付き）
+
+        # ダウンロードボタン（Word形式・テキスト形式）
         st.markdown("---")
         col1, col2 = st.columns(2)
         with col1:
