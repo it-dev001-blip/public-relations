@@ -261,38 +261,7 @@ def parse_json_from_gemini(raw_text: str):
     return json.loads(text)
 
 
-def generate_export_document(input_method: str, url_input: str, input_text: str, results: list) -> str:
-    """分析結果をMarkdown形式のドキュメントとして生成する"""
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    doc = []
-    doc.append("# 医療広告ガイドライン チェック結果レポート\n")
-    doc.append(f"**出力日時:** {now}\n")
-    
-    doc.append("## 1. チェック対象\n")
-    if input_method == "URLから読み込み" and url_input:
-        doc.append(f"**対象URL:** {url_input}\n")
-    doc.append("**対象テキスト:**")
-    doc.append("```text")
-    doc.append(input_text)
-    doc.append("```\n")
-    
-    doc.append("## 2. 分析結果\n")
-    if not results:
-        doc.append("✅ 医療広告ガイドラインに抵触する可能性のある表現は見つかりませんでした。\n")
-    else:
-        high_risk_count = sum(1 for r in results if r.get("risk_level") == "高")
-        doc.append(f"**総指摘件数:** {len(results)} 件（うち 危険度「高」: {high_risk_count} 件）\n")
-        
-        for idx, res in enumerate(results, 1):
-            doc.append(f"### 指摘 {idx}: {res.get('phrase', '')}")
-            doc.append(f"- **危険度:** {res.get('risk_level', '')}")
-            doc.append(f"- **カテゴリ:** {res.get('category', '')}")
-            doc.append(f"- **抵触理由:** {res.get('reason', '')}")
-            doc.append(f"- **法的根拠:** {res.get('legal_basis', '')} ({res.get('legal_basis_date', '')})")
-            doc.append(f"- **改善案:** {res.get('suggestion', '')}\n")
-            
-    return "\\n".join(doc)
+
 
 # ==========================================
 # 3. アプリケーションUI & メインロジック
@@ -364,9 +333,23 @@ if api_key and api_key != "YOUR_GEMINI_API_KEY_HERE":
                     st.error(f"❌ URLからコンテンツを読み込めませんでした。\n理由: {str(e)}")
                     st.info("💡 Bot防止機能などが働いている可能性があります。恐れ入りますが、「テキストを直接入力」タブに切り替え、Webサイトの文章をコピー＆ペーストしてご利用ください。")
 
+    # セッションステートの初期化
+    if "analysis_results" not in st.session_state:
+        st.session_state.analysis_results = None
+    if "checked_text" not in st.session_state:
+        st.session_state.checked_text = ""
+
     # チェック実行ボタン
     if input_text:
+        # 入力テキストが変更された場合は、古い結果をクリアして非表示にする
+        if input_text != st.session_state.checked_text and st.session_state.analysis_results is not None:
+            st.session_state.analysis_results = None
+            st.session_state.checked_text = ""
+
         if st.button("🔍 ガイドラインチェックを実行する", type="primary", use_container_width=True):
+            # 古い結果を一旦クリア
+            st.session_state.analysis_results = None
+            st.session_state.checked_text = ""
             
             # プログレス表示と2段階処理
             progress_bar = st.progress(0)
@@ -401,83 +384,88 @@ if api_key and api_key != "YOUR_GEMINI_API_KEY_HERE":
                 status_text.empty()
                 progress_bar.empty()
                 
-                # -----------------
-                # 結果表示
-                # -----------------
-                st.markdown("---")
-                st.subheader("📊 分析結果")
-                
-                if not results:
-                    st.markdown("""
-                    <div class="status-box status-ok">
-                        ✅ 医療広告ガイドラインに抵触する可能性のある表現は見つかりませんでした。
-                    </div>
-                    """, unsafe_allow_html=True)
-                    st.balloons()
-                else:
-                    # 危険度集計
-                    high_risk_count = sum(1 for r in results if r.get("risk_level") == "高")
-                    mid_risk_count = sum(1 for r in results if r.get("risk_level") == "中")
-                    
-                    if high_risk_count > 0:
-                        st.markdown(f"""
-                        <div class="status-box status-ng">
-                            ❌ 要注意・修正必須の表現が {len(results)} 件検出されました。（うち 危険度「高」: {high_risk_count} 件）
-                        </div>
-                        """, unsafe_allow_html=True)
-                    else:
-                        st.markdown(f"""
-                        <div class="status-box status-warning">
-                            ⚠️ 要注意表現が {len(results)} 件検出されました。念のため内容の見直しを推奨します。
-                        </div>
-                        """, unsafe_allow_html=True)
-                    
-                    # 各指摘事項をカード形式で表示
-                    for idx, res in enumerate(results, 1):
-                        risk = res.get("risk_level", "中")
-                        risk_class = "card-ng" if risk == "高" else "card-warning"
-                        badge_class = "badge-high" if risk == "高" else "badge-mid"
-                        
-                        st.markdown(f"""
-                        <div class="card {risk_class}">
-                            <div style="display: flex; align-items: center; margin-bottom: 0.75rem;">
-                                <span class="badge {badge_class}">危険度: {risk}</span>
-                                <span style="font-weight: 600; color: #374151; font-size: 0.95rem;">カテゴリ: {res.get('category', '一般内規')}</span>
-                            </div>
-                            <div class="original-phrase">対象表現: 「{res.get('phrase', '')}」</div>
-                            <div style="margin-top: 0.75rem; font-size: 0.95rem; line-height: 1.6;">
-                                <strong>💡 抵触理由:</strong> {res.get('reason', '')}
-                            </div>
-                            <div style="margin-top: 0.5rem; font-size: 0.95rem; line-height: 1.6; background-color: #f0fdf4; padding: 0.5rem 0.8rem; border-radius: 6px; border-left: 3px solid #16a34a;">
-                                <strong>✅ 改善案（代替表現・削除案）:</strong> {res.get('suggestion', '')}
-                            </div>
-                            <div class="meta-section">
-                                ⚖️ <strong>法的根拠:</strong> {res.get('legal_basis', '未詳')} 
-                                <span style="margin-left: 1.5rem;">📅 <strong>発出・最終改訂:</strong> {res.get('legal_basis_date', '不明・未記載')}</span>
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                
-                # エクスポート機能の追加
-                st.markdown("---")
-                target_url = url_input if input_method == "URLから読み込み" else ""
-                export_doc = generate_export_document(input_method, target_url, input_text, results)
-                st.download_button(
-                    label="📥 分析結果をドキュメントとしてダウンロード (.md)",
-                    data=export_doc,
-                    file_name="guideline_check_result.md",
-                    mime="text/markdown",
-                    use_container_width=True
-                )
+                # セッションステートに保存
+                st.session_state.analysis_results = results
+                st.session_state.checked_text = input_text
                 
             except json.JSONDecodeError:
                 st.error("❌ AIの解析結果を正しく処理できませんでした。出力フォーマットが崩れた可能性があります。再度実行してください。")
-                with st.expander("生データを確認する"):
-                    st.text(stage2_raw)
+                if 'stage2_raw' in locals():
+                    with st.expander("生データを確認する"):
+                        st.text(stage2_raw)
             except Exception as e:
                 st.error(f"❌ エラーが発生しました: {str(e)}")
     else:
         st.info("💡 テキストを入力するか、URLを読み込んで「ガイドラインチェックを実行する」ボタンを押してください。")
+
+    # 分析結果の描画
+    if st.session_state.analysis_results is not None:
+        results = st.session_state.analysis_results
+        
+        st.markdown("---")
+        st.subheader("📊 分析結果")
+        
+        if not results:
+            st.markdown("""
+            <div class="status-box status-ok">
+                ✅ 医療広告ガイドラインに抵触する可能性のある表現は見つかりませんでした。
+            </div>
+            """, unsafe_allow_html=True)
+            st.balloons()
+        else:
+            # 危険度集計
+            high_risk_count = sum(1 for r in results if r.get("risk_level") == "高")
+            mid_risk_count = sum(1 for r in results if r.get("risk_level") == "中")
+            
+            if high_risk_count > 0:
+                st.markdown(f"""
+                <div class="status-box status-ng">
+                    ❌ 要注意・修正必須の表現が {len(results)} 件検出されました。（うち 危険度「高」: {high_risk_count} 件）
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                <div class="status-box status-warning">
+                    ⚠️ 要注意表現が {len(results)} 件検出されました。念のため内容の見直しを推奨します。
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # 各指摘事項をカード形式で表示
+            for idx, res in enumerate(results, 1):
+                risk = res.get("risk_level", "中")
+                risk_class = "card-ng" if risk == "高" else "card-warning"
+                badge_class = "badge-high" if risk == "高" else "badge-mid"
+                
+                st.markdown(f"""
+                <div class="card {risk_class}">
+                    <div style="display: flex; align-items: center; margin-bottom: 0.75rem;">
+                        <span class="badge {badge_class}">危険度: {risk}</span>
+                        <span style="font-weight: 600; color: #374151; font-size: 0.95rem;">カテゴリ: {res.get('category', '一般内規')}</span>
+                    </div>
+                    <div class="original-phrase">対象表現: 「{res.get('phrase', '')}」</div>
+                    <div style="margin-top: 0.75rem; font-size: 0.95rem; line-height: 1.6;">
+                        <strong>💡 抵触理由:</strong> {res.get('reason', '')}
+                    </div>
+                    <div style="margin-top: 0.5rem; font-size: 0.95rem; line-height: 1.6; background-color: #f0fdf4; padding: 0.5rem 0.8rem; border-radius: 6px; border-left: 3px solid #16a34a;">
+                        <strong>✅ 改善案（代替表現・削除案）:</strong> {res.get('suggestion', '')}
+                    </div>
+                    <div class="meta-section">
+                        ⚖️ <strong>法的根拠:</strong> {res.get('legal_basis', '未詳')} 
+                        <span style="margin-left: 1.5rem;">📅 <strong>発出・最終改訂:</strong> {res.get('legal_basis_date', '不明・未記載')}</span>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+        
+        # 分析結果のJSONデータをそのままダウンロード
+        st.markdown("---")
+        json_data = json.dumps(results, ensure_ascii=False, indent=2)
+        st.download_button(
+            label="📥 分析結果をJSONとしてダウンロード (.json)",
+            data=json_data,
+            file_name="analysis_results.json",
+            mime="application/json",
+            use_container_width=True
+        )
 
 else:
     st.info("APIキーの入力を待機しています。")
