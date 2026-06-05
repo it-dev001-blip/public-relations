@@ -4,6 +4,8 @@ import requests
 from bs4 import BeautifulSoup
 import google.generativeai as genai
 import datetime
+import time
+import re
 import io
 from docx import Document
 
@@ -152,6 +154,35 @@ def extract_text_from_url(url: str) -> str:
         raise RuntimeError(f"URLからのデータ取得に失敗しました: {str(e)}")
 
 
+def call_gemini_with_retry(model_name: str, prompt: str, max_retries: int = 3) -> str:
+    """429クォータエラー時に自動リトライするGemini呼び出しラッパー"""
+    model = genai.GenerativeModel(model_name)
+    for attempt in range(max_retries):
+        try:
+            response = model.generate_content(prompt)
+            return response.text
+        except Exception as e:
+            err_str = str(e)
+            # 429レート制限エラーの場合、待機時間を取得してリトライ
+            if "429" in err_str or "quota" in err_str.lower() or "rate" in err_str.lower():
+                # エラーメッセージから待機秒数を抽出（例: retry in 37.5s）
+                match = re.search(r'retry[^\d]*(\d+\.?\d*)', err_str, re.IGNORECASE)
+                wait_sec = int(float(match.group(1))) + 5 if match else 45
+                if attempt < max_retries - 1:
+                    st.warning(f"⏳ APIの利用上限に一時的に達しました。{wait_sec}秒後に自動で再試行します... (試行 {attempt + 1}/{max_retries})")
+                    time.sleep(wait_sec)
+                else:
+                    raise RuntimeError(
+                        f"APIの1日あたりの無料利用上限（20回）に達しました。\n"
+                        f"・しばらく時間をおいてから再度お試しください。\n"
+                        f"・または、Google AI Studioでお支払い情報を設定することで上限を引き上げることができます。\n"
+                        f"詳細: https://ai.google.dev/gemini-api/docs/rate-limits"
+                    )
+            else:
+                raise
+    raise RuntimeError("予期しないエラーが発生しました。")
+
+
 def run_gemini_stage_1(text: str, model_name: str) -> str:
     """ステップ1: 違反の疑いがある箇所を一次抽出する"""
     prompt = f"""
@@ -178,29 +209,37 @@ def run_gemini_stage_1(text: str, model_name: str) -> str:
     "reason": "ガイドラインに抵触する理由の解説",
     "legal_basis": "抵触する恐れのあるガイドライン項目や条文名",
     "legal_basis_date": "そのガイドライン・条文の発出・最終改訂年月日（例: 平成30年5月8日改正、など。不確かな場合は空欄）",
-    "suggestion": "具体的な代替表現または削除の推奨案"
+    "suggestion": "ガイドラインに抵触しない、自然で正確な日本語による具体的な代替表現または削除の推奨案"
   }}
 ]
 
 【分析対象テキスト】
 {text}
 """
-    model = genai.GenerativeModel(model_name)
-    response = model.generate_content(prompt)
-    return response.text
+    return call_gemini_with_retry(model_name, prompt)
 
 
 def run_gemini_stage_2(stage1_result: str, model_name: str) -> str:
-    """ステップ2: 法的根拠のファクトチェック・ダブルチェック"""
+    """ステップ2: 法的根拠のファクトチェック＋改善案の品質・整合性確認"""
     prompt = f"""
-あなたは医療法および医療広告ガイドラインに極めて精通した法律の専門家・ファクトチェッカーです。
-ステップ1でAIが一次抽出した「ガイドライン違反の疑いリスト」に対して、厳格なファクトチェックを行ってください。
+あなたは医療法および医療広告ガイドラインに極めて精通した法律の専門家・ファクトチェッカーであり、
+かつ日本語表現の校正・編集の専門家でもあります。
+ステップ1でAIが一次抽出した「ガイドライン違反の疑いリスト」に対して、以下の観点で精査・修正を行ってください。
 
-【ファクトチェックのルール】
-1. 「法的根拠 (legal_basis)」および「発出・最終改訂年月日 (legal_basis_date)」が、実在する公式の医療広告ガイドラインや厚生労働省の告示・通達と一致しているかをファクトチェックしてください。
-2. 存在しない架空の法律・条文や、誤った年月日（ハルシネーション）が書かれている場合は、正しい情報に修正してください。
-3. もし「これは明らかにガイドラインに抵触しない」「法的な根拠が全く実在しない誤認である」と判断される指摘があった場合は、その指摘項目そのものをリストから完全に削除（除外）してください。
-4. 指摘内容自体が実在のガイドライン項目に準拠している場合は、法的根拠と改訂日を正確に補正した上で残してください。
+【確認・修正のルール】
+■ 法的根拠のファクトチェック
+1. 「法的根拠 (legal_basis)」および「発出・最終改訂年月日 (legal_basis_date)」が、実在する公式の医療広告ガイドラインや厚生労働省の告示・通達と一致しているかを確認し、誤りは正しい情報に修正してください。
+2. 架空の法律・条文や誤った年月日（ハルシネーション）が含まれる場合は正確な情報に修正してください。
+3. 明らかにガイドラインに抵触しない、または法的根拠が全く実在しない誤認の指摘はリストから削除してください。
+4. 実在のガイドライン項目に準拠している指摘は、法的根拠と改訂日を正確に補正した上で残してください。
+
+■ 改善案（suggestion）の品質確認・修正
+5. 「改善案」の文章が日本語として正確かつ自然な表現になっているかを確認してください。
+   「てにをは」の誤り、不自然な言い回し、冗長な表現、二重否定、主語と述語のねじれ等があれば修正し、
+   実際の広告・Webサイトで使用できる洗練された自然な日本語に整えてください。
+6. 修正後の「改善案」が医療広告ガイドラインおよび医療法に抵触しない安全な表現であることを最終確認し、
+   抵触の恐れがある場合はさらに安全な表現に修正してください。
+7. 改善案が「削除を推奨する」趣旨の場合は、その旨を簡潔かつ明確な日本語で表現してください。
 
 【出力フォーマット】
 最終的な精査済みのリストを、以下のキーを持つJSONの配列として出力してください。Markdownのjsonコードブロック（```json ... ```）で囲んでください。
@@ -212,55 +251,15 @@ def run_gemini_stage_2(stage1_result: str, model_name: str) -> str:
     "reason": "ファクトチェックを経た正確な理由の解説",
     "legal_basis": "正確に実在するガイドライン項目や条文名",
     "legal_basis_date": "実在する発出・最終改訂年月日（例: 平成30年5月8日改正、令和5年4月1日一部改正など。判明している最新の日付を正確に記載）",
-    "suggestion": "具体的な代替表現または削除の推奨案"
+    "suggestion": "日本語として自然かつ医療広告ガイドラインに完全準拠した改善案"
   }}
 ]
 
 【検証対象（ステップ1の抽出結果）】
 {stage1_result}
 """
-    model = genai.GenerativeModel(model_name)
-    response = model.generate_content(prompt)
-    return response.text
+    return call_gemini_with_retry(model_name, prompt)
 
-
-def run_gemini_stage_3(stage2_result: str, model_name: str) -> str:
-    """ステップ3: 改善案の日本語品質チェック＆ガイドライン最終確認"""
-    prompt = f"""
-あなたは医療広告ガイドラインの専門家であり、かつ日本語表現の校正・編集者でもあります。
-ステップ2までの精査を経たリストに対して、各指摘の「改善案 (suggestion)」について以下の2点を最終確認・修正してください。
-
-【確認・修正のルール】
-1. 【日本語品質チェック】
-   - 「改善案」の文章が、日本語として正確かつ自然な表現になっているかを確認してください。
-   - 「てにをは」の誤り、不自然な言い回し、冗長な表現、二重否定、主語と述語のねじれなどがあれば修正してください。
-   - 実際の広告・Webサイトで使用できる、洗練された自然な日本語に整えてください。
-
-2. 【ガイドライン最終確認】
-   - 修正後の「改善案」が、医療広告ガイドラインおよび医療法に抵触しない安全な表現であることを最終確認してください。
-   - もし改善案自体がまだガイドラインに抵触する恐れがある場合は、安全な表現に修正してください。
-   - 改善案が「削除を推奨する」という趣旨の場合は、その旨を簡潔かつ明確な日本語で表現してください。
-
-【出力フォーマット】
-最終的な完成版リストを、以下のキーを持つJSONの配列として出力してください。Markdownのjsonコードブロック（```json ... ```）で囲んでください。
-[
-  {{
-    "phrase": "抵触リスクのあるフレーズ",
-    "risk_level": "高" または "中",
-    "category": "違反カテゴリ",
-    "reason": "理由の解説",
-    "legal_basis": "実在するガイドライン項目や条文名",
-    "legal_basis_date": "発出・最終改訂年月日",
-    "suggestion": "日本語として自然かつガイドラインに完全準拠した改善案"
-  }}
-]
-
-【検証対象（ステップ2の精査済み結果）】
-{stage2_result}
-"""
-    model = genai.GenerativeModel(model_name)
-    response = model.generate_content(prompt)
-    return response.text
 
 
 def parse_json_from_gemini(raw_text: str):
@@ -353,10 +352,9 @@ if api_key and api_key != "YOUR_GEMINI_API_KEY_HERE":
         - 品位を損ねる内容（不適切な割引等）
         - 医療と無関係な誘引（著名人の来院等）
 
-        **【3段階チェックの流れ】**
+        **【2段階チェックの流れ】**
         1. 一次抽出（違反候補の特定）
-        2. 法的根拠のファクトチェック
-        3. 改善案の日本語校正＋ガイドライン最終確認
+        2. 法的根拠のファクトチェック＋改善案の品質・整合性確認
         """)
 
     st.subheader("📝 広告原稿・Webページの入力")
@@ -407,25 +405,19 @@ if api_key and api_key != "YOUR_GEMINI_API_KEY_HERE":
 
             try:
                 # ステップ1: 一次抽出
-                status_text.markdown("🔄 **[Step 1/3]** AIがガイドライン抵触の疑いがある表現を一次抽出しています...")
-                progress_bar.progress(15)
+                status_text.markdown("🔄 **[Step 1/2]** AIがガイドライン抵触の疑いがある表現を一次抽出しています...")
+                progress_bar.progress(20)
                 stage1_raw = run_gemini_stage_1(input_text, model_name)
-                progress_bar.progress(35)
-
-                # ステップ2: 法的根拠のファクトチェック
-                status_text.markdown("🛡️ **[Step 2/3]** 法的根拠・条文・発出日の正確性をファクトチェックしています...")
                 progress_bar.progress(50)
-                stage2_raw = run_gemini_stage_2(stage1_raw, model_name)
-                progress_bar.progress(70)
 
-                # ステップ3: 改善案の日本語品質＆ガイドライン最終確認
-                status_text.markdown("✍️ **[Step 3/3]** 改善案の日本語品質とガイドライン準拠を最終確認しています...")
-                progress_bar.progress(85)
-                stage3_raw = run_gemini_stage_3(stage2_raw, model_name)
-                progress_bar.progress(95)
+                # ステップ2: 法的根拠のファクトチェック＋改善案の品質・整合性確認
+                status_text.markdown("🛡️ **[Step 2/2]** 法的根拠のファクトチェックおよび改善案の日本語品質・ガイドライン整合性を確認しています...")
+                progress_bar.progress(65)
+                stage2_raw = run_gemini_stage_2(stage1_raw, model_name)
+                progress_bar.progress(90)
 
                 status_text.markdown("📊 結果を整形中...")
-                results = parse_json_from_gemini(stage3_raw)
+                results = parse_json_from_gemini(stage2_raw)
 
                 progress_bar.progress(100)
                 status_text.empty()
@@ -438,9 +430,9 @@ if api_key and api_key != "YOUR_GEMINI_API_KEY_HERE":
                 status_text.empty()
                 progress_bar.empty()
                 st.error("❌ AIの解析結果を正しく処理できませんでした。出力フォーマットが崩れた可能性があります。再度実行してください。")
-                if 'stage3_raw' in locals():
+                if 'stage2_raw' in locals():
                     with st.expander("生データを確認する"):
-                        st.text(stage3_raw)
+                        st.text(stage2_raw)
             except Exception as e:
                 status_text.empty()
                 progress_bar.empty()
