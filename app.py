@@ -4,6 +4,8 @@ import requests
 from bs4 import BeautifulSoup
 import google.generativeai as genai
 import datetime
+import io
+from docx import Document
 
 # ==========================================
 # 1. ページ初期設定＆デザインシステム (CSS)
@@ -261,6 +263,62 @@ def parse_json_from_gemini(raw_text: str):
     return json.loads(text)
 
 
+def generate_docx(results: list) -> bytes:
+    """分析結果をWord（.docx）形式のバイナリデータとして生成する"""
+    doc = Document()
+    doc.add_heading("医療広告ガイドライン分析結果", level=1)
+    
+    # 危険度集計
+    high_risk_count = sum(1 for r in results if r.get("risk_level") == "高")
+    doc.add_paragraph(f"総指摘件数: {len(results)} 件（うち 危険度「高」: {high_risk_count} 件）\n")
+    
+    for idx, res in enumerate(results, 1):
+        doc.add_heading(f"指摘 {idx}", level=2)
+        
+        p = doc.add_paragraph()
+        p.add_run("対象表現: ").bold = True
+        p.add_run(f"「{res.get('phrase', '')}」\n")
+        
+        p.add_run("危険度: ").bold = True
+        p.add_run(f"{res.get('risk_level', '')}\n")
+        
+        p.add_run("カテゴリ: ").bold = True
+        p.add_run(f"{res.get('category', '')}\n")
+        
+        p.add_run("抵触理由: ").bold = True
+        p.add_run(f"{res.get('reason', '')}\n")
+        
+        p.add_run("改善案（代替表現・削除案）: ").bold = True
+        p.add_run(f"{res.get('suggestion', '')}\n")
+        
+        p.add_run("法的根拠: ").bold = True
+        p.add_run(f"{res.get('legal_basis', '未詳')} (発出・最終改訂: {res.get('legal_basis_date', '不明・未記載')})")
+        
+    bio = io.BytesIO()
+    doc.save(bio)
+    return bio.getvalue()
+
+
+def generate_txt(results: list) -> str:
+    """分析結果をシンプルなプレーンテキスト形式として生成する"""
+    lines = []
+    lines.append("=========================================")
+    lines.append("医療広告ガイドライン 分析結果")
+    lines.append("=========================================\n")
+    
+    high_risk_count = sum(1 for r in results if r.get("risk_level") == "高")
+    lines.append(f"総指摘件数: {len(results)} 件（うち 危険度「高」: {high_risk_count} 件）\n")
+    
+    for idx, res in enumerate(results, 1):
+        lines.append(f"--- 指摘 {idx} ---")
+        lines.append(f"対象表現: 「{res.get('phrase', '')}」")
+        lines.append(f"危険度: {res.get('risk_level', '')}")
+        lines.append(f"カテゴリ: {res.get('category', '')}")
+        lines.append(f"抵触理由: {res.get('reason', '')}")
+        lines.append(f"改善案（代替表現・削除案）: {res.get('suggestion', '')}")
+        lines.append(f"法的根拠: {res.get('legal_basis', '未詳')} (発出・最終改訂: {res.get('legal_basis_date', '不明・未記載')})\n")
+        
+    return "\n".join(lines)
 
 
 # ==========================================
@@ -456,16 +514,27 @@ if api_key and api_key != "YOUR_GEMINI_API_KEY_HERE":
                 </div>
                 """, unsafe_allow_html=True)
         
-        # 分析結果のJSONデータをそのままダウンロード
+        # エクスポート機能（Word形式とテキスト形式のダウンロード、法的根拠付き）
         st.markdown("---")
-        json_data = json.dumps(results, ensure_ascii=False, indent=2)
-        st.download_button(
-            label="📥 分析結果をJSONとしてダウンロード (.json)",
-            data=json_data,
-            file_name="analysis_results.json",
-            mime="application/json",
-            use_container_width=True
-        )
+        col1, col2 = st.columns(2)
+        with col1:
+            docx_data = generate_docx(results)
+            st.download_button(
+                label="📥 Word形式でダウンロード (.docx)",
+                data=docx_data,
+                file_name="analysis_results.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True
+            )
+        with col2:
+            txt_data = generate_txt(results)
+            st.download_button(
+                label="📥 テキスト形式でダウンロード (.txt)",
+                data=txt_data,
+                file_name="analysis_results.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
 
 else:
     st.info("APIキーの入力を待機しています。")
