@@ -8,6 +8,7 @@ import time
 import re
 import io
 from docx import Document
+from urllib.parse import urlparse, urljoin
 
 # ==========================================
 # 1. ページ初期設定＆デザインシステム (CSS)
@@ -132,26 +133,71 @@ st.markdown("""
 # 2. ヘルパー関数
 # ==========================================
 
-def extract_text_from_url(url: str) -> str:
-    """URLからメインテキストをスクレイピングする"""
+def extract_text_from_url(url: str, max_pages: int = 10) -> str:
+    """URLからメインテキストをスクレイピングし、同一ドメイン内のリンク先も取得する"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        response.encoding = response.apparent_encoding
-        soup = BeautifulSoup(response.text, 'html.parser')
-        for tag in soup(["script", "style", "nav", "footer", "header", "iframe"]):
-            tag.decompose()
-        lines = (line.strip() for line in soup.get_text().splitlines())
-        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        text = "\n".join(chunk for chunk in chunks if chunk)
-        if not text or len(text.strip()) < 10:
-            raise ValueError("抽出されたテキストが極めて少ないか、空です。")
-        return text
-    except Exception as e:
-        raise RuntimeError(f"URLからのデータ取得に失敗しました: {str(e)}")
+    
+    base_domain = urlparse(url).netloc
+    visited_urls = set()
+    urls_to_visit = [url]
+    all_texts = []
+    
+    # URLリストがある限り、かつ最大ページ数に達するまで処理
+    while urls_to_visit and len(visited_urls) < max_pages:
+        current_url = urls_to_visit.pop(0)
+        if current_url in visited_urls:
+            continue
+            
+        try:
+            response = requests.get(current_url, headers=headers, timeout=10)
+            response.raise_for_status()
+            response.encoding = response.apparent_encoding
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # メインページ（最初）の場合のみ、リンクを抽出してキューに追加
+            if len(visited_urls) == 0:
+                for a_tag in soup.find_all('a', href=True):
+                    href = a_tag['href']
+                    full_url = urljoin(current_url, href)
+                    full_url = full_url.split('#')[0] # フラグメントを除去
+                    # 同一ドメインで、未訪問・未予約のURLのみ追加
+                    if urlparse(full_url).netloc == base_domain and full_url not in visited_urls and full_url not in urls_to_visit:
+                        urls_to_visit.append(full_url)
+                        
+            # 不要なタグを削除
+            for tag in soup(["script", "style", "nav", "footer", "header", "iframe"]):
+                tag.decompose()
+                
+            lines = (line.strip() for line in soup.get_text().splitlines())
+            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+            text = "\n".join(chunk for chunk in chunks if chunk)
+            
+            # ページタイトルを取得
+            page_title = soup.title.string.strip() if soup.title and soup.title.string else "タイトルなし"
+            
+            # テキストが一定量以上あれば追加
+            if text and len(text.strip()) >= 10:
+                all_texts.append(f"【抽出元ページ: {page_title} ({current_url})】\n{text}")
+                
+            visited_urls.add(current_url)
+            time.sleep(1) # サーバー負荷軽減のため1秒待機
+            
+        except Exception as e:
+            if len(visited_urls) == 0:
+                # メインURLの取得に失敗した場合はエラー
+                raise RuntimeError(f"メインURLからのデータ取得に失敗しました: {str(e)}")
+            else:
+                # リンク先の取得エラーはスキップして次へ
+                visited_urls.add(current_url)
+                continue
+
+    combined_text = "\n\n".join(all_texts)
+    if not combined_text.strip():
+        raise ValueError("抽出されたテキストが極めて少ないか、空です。")
+        
+    return combined_text
 
 
 def call_gemini_with_retry(model_name: str, prompt: str, max_retries: int = 3) -> str:
@@ -204,6 +250,7 @@ def run_gemini_stage_1(text: str, model_name: str) -> str:
 [
   {{
     "phrase": "抵触リスクのある具体的なフレーズ",
+    "source_url": "そのフレーズが記載されていた抽出元ページのURLおよびページ名（テキスト内に付与されている【抽出元ページ: ...】の情報を参照してください。直接入力テキストの場合は「直接入力」等としてください）",
     "risk_level": "高" または "中",
     "category": "違反カテゴリ（誇大広告、主観的な体験談など）",
     "reason": "ガイドラインに抵触する理由の解説",
@@ -246,6 +293,7 @@ def run_gemini_stage_2(stage1_result: str, model_name: str) -> str:
 [
   {{
     "phrase": "修正済みの抵触リスクのあるフレーズ",
+    "source_url": "ステップ1で抽出されたページ名とURLをそのまま維持",
     "risk_level": "高" または "中",
     "category": "違反カテゴリ",
     "reason": "ファクトチェックを経た正確な理由の解説",
@@ -283,6 +331,8 @@ def generate_docx(results: list) -> bytes:
         p = doc.add_paragraph()
         p.add_run("対象表現: ").bold = True
         p.add_run(f"「{res.get('phrase', '')}」\n")
+        p.add_run("記載ページ: ").bold = True
+        p.add_run(f"{res.get('source_url', '不明')}\n")
         p.add_run("危険度: ").bold = True
         p.add_run(f"{res.get('risk_level', '')}\n")
         p.add_run("カテゴリ: ").bold = True
@@ -309,6 +359,7 @@ def generate_txt(results: list) -> str:
     for idx, res in enumerate(results, 1):
         lines.append(f"--- 指摘 {idx} ---")
         lines.append(f"対象表現: 「{res.get('phrase', '')}」")
+        lines.append(f"記載ページ: {res.get('source_url', '不明')}")
         lines.append(f"危険度: {res.get('risk_level', '')}")
         lines.append(f"カテゴリ: {res.get('category', '')}")
         lines.append(f"抵触理由: {res.get('reason', '')}")
@@ -372,7 +423,7 @@ if api_key and api_key != "YOUR_GEMINI_API_KEY_HERE":
     else:
         url_input = st.text_input("チェックしたいWebページのURLを入力してください:", placeholder="https://example.com/clinic-page")
         if url_input:
-            with st.spinner("🔗 URLからテキストを抽出中..."):
+            with st.spinner("🔗 URLからテキストを抽出中...（リンク先も含め最大10ページを取得します）"):
                 try:
                     input_text = extract_text_from_url(url_input)
                     st.success("テキストの抽出に成功しました！以下の抽出内容を確認して「チェック実行」を押してください。")
@@ -482,6 +533,9 @@ if api_key and api_key != "YOUR_GEMINI_API_KEY_HERE":
                         <span style="font-weight: 600; color: #374151; font-size: 0.95rem;">カテゴリ: {res.get('category', '一般内規')}</span>
                     </div>
                     <div class="original-phrase">対象表現: 「{res.get('phrase', '')}」</div>
+                    <div style="margin-top: 0.5rem; font-size: 0.95rem; line-height: 1.6; color: #4b5563;">
+                        <strong>🔗 記載ページ:</strong> {res.get('source_url', '不明')}
+                    </div>
                     <div style="margin-top: 0.75rem; font-size: 0.95rem; line-height: 1.6;">
                         <strong>💡 抵触理由:</strong> {res.get('reason', '')}
                     </div>
