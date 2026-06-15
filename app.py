@@ -229,12 +229,22 @@ def call_gemini_with_retry(model_name: str, prompt: str, max_retries: int = 3) -
     raise RuntimeError("予期しないエラーが発生しました。")
 
 
-def run_gemini_stage_1(text: str, model_name: str) -> str:
+def run_gemini_stage_1(text: str, model_name: str, institution_type: str) -> str:
     """ステップ1: 違反の疑いがある箇所を一次抽出する"""
     prompt = f"""
 あなたは医療広告ガイドラインの監査専門家です。
 以下の医療広告原稿（または医療Webサイトのテキスト）を厳格に分析し、
 「医療広告ガイドライン」「医療法」に抵触するリスクがある箇所をリストアップしてください。
+
+【発信元の組織・法的な立ち位置】
+学校法人聖マリアンナ医科大学傘下の以下の組織:
+{institution_type}
+※発信元の組織の種別を十分に勘案してください。教育機関（大学、看護学校）の学生募集や教育内容に関する告知は医療法における医療広告規制の対象外となる場合が多い点に留意してください。一方で、病院・クリニックからの発信や、教育機関であっても患者を誘引する意図がある医療サービスの提供に関する記述については、医療広告ガイドライン（特定機能病院等の特例を含む）に照らし合わせて適切に精査してください。過剰な指摘（抵触リスク）と判定しないよう文脈と法的立ち位置を適切に評価してください。
+
+【基準とする資料】
+以下の厚生労働省のサイトおよびそのリンク先に記載されている内容（医療法における病院等の広告規制について）を全て参照し、判定の根拠としてください。
+内容的に重なる場合は、常に最新版（最新のガイドラインや医療広告ガイドラインに関するQ&A等）を優先して適用してください。
+参照先URL: https://www.mhlw.go.jp/stf/seisakunitsuite/bunya/kenkou_iryou/iryou/kokokukisei/index.html
 
 【分析観点】
 1. 虚偽広告: 「絶対安全」「100%治る」等
@@ -254,8 +264,8 @@ def run_gemini_stage_1(text: str, model_name: str) -> str:
     "risk_level": "高" または "中",
     "category": "違反カテゴリ（誇大広告、主観的な体験談など）",
     "reason": "ガイドラインに抵触する理由の解説",
-    "legal_basis": "抵触する恐れのあるガイドライン項目や条文名",
-    "legal_basis_date": "そのガイドライン・条文の発出・最終改訂年月日（例: 平成30年5月8日改正、など。不確かな場合は空欄）",
+    "legal_basis": "抵触する恐れのあるガイドライン項目や条文名（上記参照先URLの最新情報を根拠とすること）",
+    "legal_basis_date": "そのガイドライン・条文の発出・最終改訂年月日（例: 令和5年10月4日一部改正、など。不確かな場合は空欄）",
     "suggestion": "ガイドラインに抵触しない、自然で正確な日本語による具体的な代替表現または削除の推奨案"
   }}
 ]
@@ -266,19 +276,29 @@ def run_gemini_stage_1(text: str, model_name: str) -> str:
     return call_gemini_with_retry(model_name, prompt)
 
 
-def run_gemini_stage_2(stage1_result: str, model_name: str) -> str:
+def run_gemini_stage_2(stage1_result: str, model_name: str, institution_type: str) -> str:
     """ステップ2: 法的根拠のファクトチェック＋改善案の品質・整合性確認"""
     prompt = f"""
 あなたは医療法および医療広告ガイドラインに極めて精通した法律の専門家・ファクトチェッカーであり、
 かつ日本語表現の校正・編集の専門家でもあります。
 ステップ1でAIが一次抽出した「ガイドライン違反の疑いリスト」に対して、以下の観点で精査・修正を行ってください。
 
+【発信元の組織・法的な立ち位置】
+学校法人聖マリアンナ医科大学傘下の以下の組織:
+{institution_type}
+※ファクトチェックの際も、発信元の組織の種別を十分に勘案し、教育機関（大学、看護学校）の本来の活動（学生募集等）に関する記述や、特定機能病院等としてガイドライン上許可されている事項については過剰な指摘としないよう適切に精査してください。
+
+【基準とする資料】
+以下の厚生労働省のサイトおよびそのリンク先に記載されている内容（医療法における病院等の広告規制について、医療広告ガイドライン、Q&Aなど）を全て参照し、判定・精査の根拠としてください。
+内容的に重なる場合は、常に最新版（最新のガイドラインやQ&A等）を優先して適用してください。
+参照先URL: https://www.mhlw.go.jp/stf/seisakunitsuite/bunya/kenkou_iryou/iryou/kokokukisei/index.html
+
 【確認・修正のルール】
 ■ 法的根拠のファクトチェック
-1. 「法的根拠 (legal_basis)」および「発出・最終改訂年月日 (legal_basis_date)」が、実在する公式の医療広告ガイドラインや厚生労働省の告示・通達と一致しているかを確認し、誤りは正しい情報に修正してください。
+1. 「法的根拠 (legal_basis)」および「発出・最終改訂年月日 (legal_basis_date)」が、上記参照先URLの実在する公式の医療広告ガイドラインや厚生労働省の告示・通達（最新版）と一致しているかを確認し、誤りは正しい情報に修正してください。
 2. 架空の法律・条文や誤った年月日（ハルシネーション）が含まれる場合は正確な情報に修正してください。
-3. 明らかにガイドラインに抵触しない、または法的根拠が全く実在しない誤認の指摘はリストから削除してください。
-4. 実在のガイドライン項目に準拠している指摘は、法的根拠と改訂日を正確に補正した上で残してください。
+3. 明らかに最新のガイドラインに抵触しない、または法的根拠が全く実在しない誤認の指摘はリストから削除してください。
+4. 実在の最新ガイドライン項目に準拠している指摘は、法的根拠と改訂日を正確に補正した上で残してください。
 
 ■ 改善案（suggestion）の品質確認・修正
 5. 「改善案」の文章が日本語として正確かつ自然な表現になっているかを確認してください。
@@ -296,10 +316,10 @@ def run_gemini_stage_2(stage1_result: str, model_name: str) -> str:
     "source_url": "ステップ1で抽出されたページ名とURLをそのまま維持",
     "risk_level": "高" または "中",
     "category": "違反カテゴリ",
-    "reason": "ファクトチェックを経た正確な理由の解説",
-    "legal_basis": "正確に実在するガイドライン項目や条文名",
-    "legal_basis_date": "実在する発出・最終改訂年月日（例: 平成30年5月8日改正、令和5年4月1日一部改正など。判明している最新の日付を正確に記載）",
-    "suggestion": "日本語として自然かつ医療広告ガイドラインに完全準拠した改善案"
+    "reason": "最新のガイドラインに基づくファクトチェックを経た正確な理由の解説",
+    "legal_basis": "上記URLに基づく正確に実在するガイドライン項目や条文名",
+    "legal_basis_date": "実在する発出・最終改訂年月日（例: 令和5年10月4日一部改正など。判明している最新の日付を正確に記載）",
+    "suggestion": "日本語として自然かつ最新の医療広告ガイドラインに完全準拠した改善案"
   }}
 ]
 
@@ -409,6 +429,22 @@ if api_key and api_key != "YOUR_GEMINI_API_KEY_HERE":
         """)
 
     st.subheader("📝 広告原稿・Webページの入力")
+
+    selected_type = st.selectbox(
+        "🏫 広告の主体となる組織を選択してください（組織の法的立ち位置を勘案して判定します）:",
+        [
+            "聖マリアンナ医科大学（大学・教育機関）",
+            "聖マリアンナ医科大学 看護専門学校（教育機関）",
+            "聖マリアンナ医科大学病院（特定機能病院）",
+            "川崎市立多摩病院（指定管理者: 聖マリアンナ医科大学 / 地域医療支援病院）",
+            "聖マリアンナ医科大学 横浜市西部病院（地域医療支援病院）",
+            "聖マリアンナ医科大学 ブレスト&イメージングセンター（クリニック・診療所）"
+        ]
+    )
+    institution_type = selected_type
+
+    st.markdown("---")
+
     input_method = st.radio("入力方法を選択してください:", ["テキストを直接入力", "URLから読み込み"], horizontal=True)
 
     input_text = ""
@@ -458,13 +494,13 @@ if api_key and api_key != "YOUR_GEMINI_API_KEY_HERE":
                 # ステップ1: 一次抽出
                 status_text.markdown("🔄 **[Step 1/2]** AIがガイドライン抵触の疑いがある表現を一次抽出しています...")
                 progress_bar.progress(20)
-                stage1_raw = run_gemini_stage_1(input_text, model_name)
+                stage1_raw = run_gemini_stage_1(input_text, model_name, institution_type)
                 progress_bar.progress(50)
 
                 # ステップ2: 法的根拠のファクトチェック＋改善案の品質・整合性確認
                 status_text.markdown("🛡️ **[Step 2/2]** 法的根拠のファクトチェックおよび改善案の日本語品質・ガイドライン整合性を確認しています...")
                 progress_bar.progress(65)
-                stage2_raw = run_gemini_stage_2(stage1_raw, model_name)
+                stage2_raw = run_gemini_stage_2(stage1_raw, model_name, institution_type)
                 progress_bar.progress(90)
 
                 status_text.markdown("📊 結果を整形中...")
