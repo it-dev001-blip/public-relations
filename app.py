@@ -129,6 +129,23 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+st.markdown("""
+<div style="
+    background-color: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-left: 5px solid #3b82f6;
+    border-radius: 8px;
+    padding: 0.9rem 1.2rem;
+    margin-bottom: 1.5rem;
+    font-size: 0.9rem;
+    color: #1e3a5f;
+    line-height: 1.7;
+">
+    📋 <strong>チェック基準について</strong><br>
+    本ツールは、厚生労働省「<a href="https://www.mhlw.go.jp/stf/seisakunitsuite/bunya/kenkou_iryou/iryou/kokokukisei/index.html" target="_blank" style="color: #2563eb; text-decoration: underline;">医療法における病院等の広告規制について</a>」およびそこからリンクされている関連情報（医療広告ガイドライン、最新のQ&amp;A等）を<strong>抵触チェックの絶対的な基準</strong>として判定を行います。
+</div>
+""", unsafe_allow_html=True)
+
 # ==========================================
 # 2. ヘルパー関数
 # ==========================================
